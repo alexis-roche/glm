@@ -3,15 +3,14 @@
 import numpy as np
 import scipy.stats as sp_stats
 
-DEF_TINY = 1e-50
-DEF_DOFMAX = 1e10
+TINY = 1e-50
+DOFMAX = 1e10
 
 
 def zscore(pvalue):
     """ Return the z-score corresponding to a given p-value.
     """
-    tiny = 1e-15
-    pvalue = np.minimum(np.maximum(pvalue, tiny), 1. - tiny)
+    pvalue = np.minimum(np.maximum(pvalue, TINY), 1. - TINY)
     z = sp_stats.norm.isf(pvalue)
     return z
 
@@ -24,9 +23,9 @@ class GLM(object):
         if Y == None:
             return
         else:
-            self.fit(Y, X, formula, axis)
+            self._fit(Y, X, formula, axis)
 
-    def fit(self, Y, X, formula=None, axis=0):
+    def _fit(self, Y, X, formula=None, axis=0):
 
         if Y.shape[axis] != X.shape[0]:
             raise ValueError('Response and predictors are inconsistent')
@@ -52,7 +51,7 @@ class GLM(object):
              method=self.method,
              axis=self._axis)
 
-    def contrast(self, c, type='t', tiny=DEF_TINY, dofmax=DEF_DOFMAX):
+    def contrast(self, c, kind='t'):
         """ Specify and estimate a constrast
 
         c must be a numpy.ndarray (or anything that numpy.asarray
@@ -79,20 +78,13 @@ class GLM(object):
         nvbeta = self.nvbeta
         if dim == 1:
             nvcon = np.inner(c, np.inner(c, nvbeta))
-            vcon = nvcon.squeeze() * s2
         else:
             nvcon = np.dot(c, np.inner(nvbeta, c)) # q, q
-            aux = nvcon.shape
-            vcon = np.resize(nvcon, s2.shape + aux) # X, q, q
-            vcon = vcon.T.reshape(aux + (s2.size,)) * \
-                s2.reshape((s2.size,)) # q, q, Xflat
-            vcon = vcon.reshape(aux + s2.shape) # q, q, X
 
         # Create contrast instance
-        c = Contrast(dim, type, tiny, dofmax)
+        c = Contrast(dim, kind)
         c.effect = con
-        c.variance = vcon
-        c.norm_variance = nvcon
+        c.nvar = nvcon
         c.s2 = s2
         c.dof = self.dof
         return c
@@ -100,22 +92,34 @@ class GLM(object):
 
 class Contrast(object):
 
-    def __init__(self, dim, type='t', tiny=DEF_TINY, dofmax=DEF_DOFMAX):
+    def __init__(self, dim, kind='t'):
         """tiny is a numerical constant for computations.
         """
         self.dim = dim
         self.effect = None
-        self.variance = None
+        self.nvar = None
+        self.s2 = None
         self.dof = None
         if dim > 1:
-            if type is 't':
-                type = 'F'
-        self.type = type
+            if kind is 't':
+                kind = 'F'
+        self.kind = kind
         self._stat = None
         self._pvalue = None
         self._baseline = 0
-        self._tiny = tiny
-        self._dofmax = dofmax
+
+    def get_variance(self):
+        if self.dim == 1:
+            vcon = self.nvar.squeeze() * self.s2
+        else:
+            aux = self.nvar.shape
+            vcon = np.resize(self.nvar, self.s2.shape + aux) # X, q, q
+            vcon = vcon.T.reshape(aux + (self.s2.size,)) * \
+                self.s2.reshape((self.s2.size,)) # q, q, Xflat
+            vcon = vcon.reshape(aux + self.s2.shape) # q, q, X
+        return vcon
+
+    variance = property(get_variance)
 
     def summary(self):
         """
@@ -138,30 +142,30 @@ class Contrast(object):
         if self.dim == 1:
             # avoids division by zero
             t = (self.effect - baseline) / np.sqrt(
-                np.maximum(self.variance, self._tiny))
-            if self.type == 'F':
+                np.maximum(self.variance, TINY))
+            if self.kind == 'F':
                 t = t ** 2
         # Case: F contrast
-        elif self.type == 'F':
+        elif self.kind == 'F':
             # F = |t|^2/q ,  |t|^2 = e^t v-1 e
             aux = self.effect - baseline
             aux = aux.reshape((aux.shape[0], np.prod(aux.shape[1:])))
-            A = np.linalg.inv(self.norm_variance)
+            A = np.linalg.inv(self.nvar)
             t = np.sum(aux * np.dot(A, aux), 0)
             t /= np.maximum(self.s2.reshape((self.s2.size, )) * self.dim, 
-                            self._tiny)
+                            TINY)
             t = t.reshape(aux.shape[1:])
         # Case: tmin (conjunctions)
-        elif self.type == 'tmin':
+        elif self.kind == 'tmin':
             vdiag = self.variance.reshape([self.dim ** 2] + list(
                     self.variance.shape[2:]))[:: self.dim + 1]
             t = (self.effect - baseline) / np.sqrt(
-                np.maximum(vdiag, self._tiny))
+                np.maximum(vdiag, TINY))
             t = t.min(0)
 
         # Unknwon stat
         else:
-            raise ValueError('Unknown statistic type')
+            raise ValueError('Unknown statistic kind')
         self._stat = t
         return t
 
@@ -173,13 +177,13 @@ class Contrast(object):
         if self._stat == None or not self._baseline == baseline:
             self._stat = self.stat(baseline)
         # Valid conjunction as in Nichols et al, Neuroimage 25, 2005.
-        if self.type in ['t', 'tmin']:
-            p = sp_stats.t.sf(self._stat, np.minimum(self.dof, self._dofmax))
-        elif self.type == 'F':
+        if self.kind in ['t', 'tmin']:
+            p = sp_stats.t.sf(self._stat, np.minimum(self.dof, DOFMAX))
+        elif self.kind == 'F':
             p = sp_stats.f.sf(self._stat, self.dim, np.minimum(
-                    self.dof, self._dofmax))
+                    self.dof, DOFMAX))
         else:
-            raise ValueError('Unknown statistic type')
+            raise ValueError('Unknown statistic kind')
         self._pvalue = p
         return p
 
@@ -199,7 +203,7 @@ class Contrast(object):
         if self.dim != other.dim:
             return None
         con = Contrast(self.dim)
-        con.type = self.type
+        con.kind = self.kind
         con.effect = self.effect + other.effect
         con.variance = self.variance + other.variance
         con.dof = self.dof + other.dof
@@ -208,7 +212,7 @@ class Contrast(object):
     def __rmul__(self, other):
         k = float(other)
         con = Contrast(self.dim)
-        con.type = self.type
+        con.kind = self.kind
         con.effect = k * self.effect
         con.variance = k ** 2 * self.variance
         con.dof = self.dof

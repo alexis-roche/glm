@@ -34,16 +34,12 @@ class GLM(object):
         # Find axis
         self._axis = axis
 
-        # Initialize fields
-        constants = []
-
         # Switch on models / methods
         out = ols(Y, X, axis=axis)
 
         # Finalize
         self.beta, self.nvbeta, self.s2, self.dof = out
         self.s2 = self.s2.squeeze()
-        self._constants = constants
 
     def save(self, file):
         """ Save fit into a .npz file
@@ -54,8 +50,7 @@ class GLM(object):
              s2=self.s2,
              dof=self.dof,
              method=self.method,
-             axis=self._axis,
-             constants=self._constants)
+             axis=self._axis)
 
     def contrast(self, c, type='t', tiny=DEF_TINY, dofmax=DEF_DOFMAX):
         """ Specify and estimate a constrast
@@ -82,27 +77,23 @@ class GLM(object):
         # Compute the variance of the contrast estimate: s2 * (c' * nvbeta * c)
         s2 = self.s2.squeeze()
         nvbeta = self.nvbeta
-        if not 'nvbeta' in self._constants:
-            nvbeta = np.rollaxis(nvbeta, axis, ndims + 1)
-            nvbeta = np.rollaxis(nvbeta, axis, ndims + 1) # shape = X, p, p
         if dim == 1:
-            vcon = np.inner(c, np.inner(c, nvbeta))
-            vcon = vcon.squeeze() * s2
+            nvcon = np.inner(c, np.inner(c, nvbeta))
+            vcon = nvcon.squeeze() * s2
         else:
-            vcon = np.dot(c, np.inner(nvbeta, c)) # q, X, q or q, q
-            if not 'nvbeta' in self._constants:
-                vcon = np.rollaxis(vcon, ndims, 1) * s2 # q, q, X
-            else:
-                aux = vcon.shape # q, q
-                vcon = np.resize(vcon, s2.shape + aux) # X, q, q
-                vcon = vcon.T.reshape(aux + (s2.size,)) * \
-                    s2.reshape((s2.size,)) # q, q, Xflat
-                vcon = vcon.reshape(aux + s2.shape) # q, q, X
+            nvcon = np.dot(c, np.inner(nvbeta, c)) # q, q
+            aux = nvcon.shape
+            vcon = np.resize(nvcon, s2.shape + aux) # X, q, q
+            vcon = vcon.T.reshape(aux + (s2.size,)) * \
+                s2.reshape((s2.size,)) # q, q, Xflat
+            vcon = vcon.reshape(aux + s2.shape) # q, q, X
 
         # Create contrast instance
         c = Contrast(dim, type, tiny, dofmax)
         c.effect = con
         c.variance = vcon
+        c.norm_variance = nvcon
+        c.s2 = s2
         c.dof = self.dof
         return c
 
@@ -153,8 +144,13 @@ class Contrast(object):
         # Case: F contrast
         elif self.type == 'F':
             # F = |t|^2/q ,  |t|^2 = e^t v-1 e
-            t = mahalanobis(self.effect - baseline, np.maximum(
-                    self.variance, self._tiny)) / self.dim
+            aux = self.effect - baseline
+            aux = aux.reshape((aux.shape[0], np.prod(aux.shape[1:])))
+            A = np.linalg.inv(self.norm_variance)
+            t = np.sum(aux * np.dot(A, aux), 0)
+            t /= np.maximum(self.s2.reshape((self.s2.size, )) * self.dim, 
+                            self._tiny)
+            t = t.reshape(aux.shape[1:])
         # Case: tmin (conjunctions)
         elif self.type == 'tmin':
             vdiag = self.variance.reshape([self.dim ** 2] + list(
@@ -253,5 +249,4 @@ def load(file):
     mod.dof = fmod['dof']
     mod.method = str(fmod['method'])
     mod._axis = int(fmod['axis'])
-    mod._constants = list(fmod['constants'])
     return mod

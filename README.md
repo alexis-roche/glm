@@ -1,4 +1,5 @@
-glm
-===
+regression
+==========
 
-A generic implementation of the general linear model.
+Implementation of several linear regression methods including OLS and
+logistic.

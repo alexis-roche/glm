@@ -12,7 +12,7 @@ def configuration(parent_package='', top_path=None):
         delegate_options_to_subpackages=True,
         quiet=True,
     )
-    config.add_subpackage('glm')
+    config.add_subpackage('regression')
     return config
 
 

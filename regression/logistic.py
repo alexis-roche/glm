@@ -122,7 +122,17 @@ class LogisticRegression(object):
         """
         EP = ExpectationPropagation(self.y, self.X, self.prior_var)
         EP.run(niters, post_loop=post_loop)
-        return EP.weight_posterior_approx()
+        return EP.posterior_approx()
+
+    def vb_approx(self, niters):
+        """
+        Approximate the unnormalized posterior distribution of
+        regression coefficients using the variational bound method
+        proposed by Jaakkola & Jordan, 1996, under a logistic model.
+        """
+        VB = VariationalBound(self.y, self.X, self.prior_var)
+        VB.run(niters)
+        return VB.update_approx()
 
     def sampling_approx(self, ndraws, method='VS'):
         fit0 = self.laplace_approx()
@@ -139,7 +149,7 @@ class LogisticRegression(object):
             raise ValueError('unknown sampling method')
         if method in ('IS', 'VS'):
             print('Evidence rel. error: %f' %\
-                      (np.sqrt(f.var_moment[0, 0]) / f.fit.Z))
+                      (np.sqrt(f.var_integral[0, 0]) / f.fit.Z))
         return f.fit
 
 
@@ -153,6 +163,7 @@ class ProbitRegression(LogisticRegression):
 
     def update_cache(self, w):
         if not w is self.cache['w']:
+
             f = np.dot(self.X, w)
             yf = self.y * f
             self.cache['f'] = f
@@ -328,7 +339,7 @@ class ExpectationPropagation(object):
         return -.5 * log_det - .5 * maha - self.y.size\
             * .5 * np.log(2 * np.pi) + self.fac_logZ.sum()
 
-    def weight_posterior_approx(self):
+    def posterior_approx(self):
         """
         We have: f = Xw
         => w = Af with A = pinv(X)
@@ -340,3 +351,63 @@ class ExpectationPropagation(object):
         m = np.dot(A, self.mu)
         V = np.dot(np.dot(A, self.Sigma), A.T)
         return Gaussian(m, V, Z=Z)
+
+
+def gamma(x):
+    """
+    x / (sigma(x) - .5)
+    """
+    x = np.maximum(np.abs(x), 1e-5)
+    return (logistic(x) - .5) / x
+
+
+class VariationalBound(object):
+
+    def __init__(self, y, X, prior_var):
+        self.y = y
+        self.X = X
+        self.prior_var = prior_var
+        self.XTX = np.dot(X.T, X)
+        self.XTX_inv = np.linalg.inv(self.XTX)
+        XTy = np.dot(X.T, y)
+        self.beta = np.dot(self.XTX_inv, XTy)
+        self.dot = np.dot(XTy.T, self.beta)
+        self._xeta = 2.0
+        self._Sigma = None
+        self._mu = None
+
+    def update_likelihood_approx(self):
+        gam = gamma(self._xeta)
+        fac = 1. / gam
+        Sigma = fac * self.XTX_inv
+        mu = .5 * fac * self.beta
+        """
+        normalizing constant
+        """
+        n = len(self.y)
+        logK = n * np.log(logistic(self._xeta))
+        logK += .5 * n * (gam * self._xeta ** 2 - self._xeta)
+        logK += .125 * fac * self.dot
+        return Gaussian(mu, Sigma, K=np.exp(logK))
+
+    def update_approx(self):
+        g = self.update_likelihood_approx()
+        dim = len(g.m)
+        prior = Gaussian(np.zeros(dim), self.prior_var * np.eye(dim))
+        g = g * prior
+        self._Sigma = g.V
+        self._mu = g.m
+        return g
+
+    def update_xeta(self):
+        dim = len(self._mu)
+        aux = self._Sigma + np.dot(np.reshape(self._mu, (dim, 1)),
+                                   np.reshape(self._mu, (1, dim)))
+        xeta2 = np.trace(np.dot(self.XTX, aux)) / len(self.y)
+        self._xeta = np.sqrt(xeta2)
+        print self._xeta
+
+    def run(self, niters):
+        for it in range(niters):
+            self.update_approx()
+            self.update_xeta()

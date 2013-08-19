@@ -405,7 +405,6 @@ class VariationalBound(object):
                                    np.reshape(self._mu, (1, dim)))
         xeta2 = np.trace(np.dot(self.XTX, aux)) / len(self.y)
         self._xeta = np.sqrt(xeta2)
-        print self._xeta
 
     def run(self, niters):
         for it in range(niters):
